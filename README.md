@@ -1,4 +1,4 @@
-# Saree & Dress Management
+# Bhami
 
 A static React app for internal supplier, purchasing, materials, production, inventory and sales records. Supabase handles email-link sign-in, business membership, private files and atomic stock posting.
 
