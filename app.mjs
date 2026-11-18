@@ -4,7 +4,7 @@ import {createClient} from 'https://esm.sh/@supabase/supabase-js@2.95.3';
 import {url, publishableKey} from './config.mjs';
 
 const h = React.createElement;
-const db = createClient(url, publishableKey, {auth:{flowType:'pkce'}});
+const db = createClient(url, publishableKey, {auth:{flowType:'implicit'}});
 const money = new Intl.NumberFormat('en-IN',{style:'currency',currency:'INR'});
 const fmt = value => money.format(Number(value));
 const number = value => Number(value).toLocaleString('en-IN',{maximumFractionDigits:6});
@@ -234,10 +234,8 @@ function App(){
   useEffect(()=>{
     let live=true;
     const hash=new URLSearchParams(location.hash.slice(1));
-    const query=new URLSearchParams(location.search);
-    const callbackError=query.get('error_description')||hash.get('error_description');
-    if(callbackError){
-      setNotice({error:true,text:callbackError});
+    if(hash.has('error_description')){
+      setNotice({error:true,text:hash.get('error_description')});
       history.replaceState(null,'',redirect());
     }
     const {data:{subscription}}=db.auth.onAuthStateChange((_event,next)=>{if(live)setSession(next);});
@@ -248,14 +246,18 @@ function App(){
   if(session) return h(Workspace,{session,key:session.user.id});
   return h('main',{className:'gate'},h('p',{className:'eyebrow muted'},'Business workspace'),
     h('h1',null,'Bhami'),
-    h('section',{className:'card'},h('h2',null,'Sign in'),h('p',{className:'muted'},'Use the Google account associated with your Bhami membership.'),
-      h('button',{type:'button',disabled:busy,onClick:async()=>{
-        if(busy)return;
+    h('section',{className:'card'},h('h2',null,'Sign in'),h('p',{className:'muted'},'We’ll email a sign-in link to your registered address.'),
+      h('form',{onSubmit:async event=>{
+        event.preventDefault();if(busy)return;
+        const email=String(new FormData(event.currentTarget).get('email')).trim();
         setBusy(true);setNotice(null);
         try{
-          checked(await db.auth.signInWithOAuth({provider:'google',options:{redirectTo:redirect()}}));
-        }catch(error){setNotice({error:true,text:errText(error)});setBusy(false);}
-      }},busy?'Opening Google…':'Continue with Google'),
+          checked(await db.auth.signInWithOtp({email,options:{shouldCreateUser:false,emailRedirectTo:redirect()}}));
+          setNotice({text:'Check your inbox for the sign-in link.'});
+        }catch(error){setNotice({error:true,text:errText(error)});}
+        finally{setBusy(false);}
+      }},h('label',null,'Email address',h('input',{name:'email',required:true,type:'email',autoComplete:'email',disabled:busy})),
+        h('button',{disabled:busy},busy?'Sending…':'Email me a sign-in link')),
       notice&&h('p',{className:'notice '+(notice.error?'error':''),role:notice.error?'alert':'status'},notice.text)));
 }
 
