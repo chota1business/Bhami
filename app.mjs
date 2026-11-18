@@ -154,7 +154,7 @@ function Workspace({session}){
   else content=h('p',{role:'status'},'Loading business records…');
 
   return h('div',{className:'layout'},h('aside',null,
-    h('div',{className:'brand'},'Saree & Dress',h('small',null,'Inventory & sales')),
+    h('div',{className:'brand'},'Bhami',h('small',null,'Inventory & sales')),
     h('nav',{'aria-label':'Workspace'},...Object.entries(names).filter(([key])=>canOperate||key==='Overview').map(([key,title])=>
       h('button',{key,disabled:busy,'aria-current':page===key?'page':undefined,onClick:()=>move(key)},title))),
     ),h('main',null,h('header',null,h('div',null,
@@ -236,7 +236,7 @@ function App(){
   if(session===undefined) return h('main',{className:'loading',role:'status'},'Opening your workspace…');
   if(session) return h(Workspace,{session,key:session.user.id});
   return h('main',{className:'gate'},h('p',{className:'eyebrow muted'},'Business workspace'),
-    h('h1',null,'Saree & Dress Management'),
+    h('h1',null,'Bhami'),
     h('section',{className:'card'},h('h2',null,'Sign in'),h('p',{className:'muted'},'We’ll email a sign-in link to your registered address.'),
       h('form',{onSubmit:async event=>{
         event.preventDefault();if(busy)return;
