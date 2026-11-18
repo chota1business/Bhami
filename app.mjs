@@ -123,11 +123,11 @@ function Workspace({session}){
     checked(result);
   },'Private file uploaded.',done);
 
-  const preview=asset=>run(async()=>{
+  const preview=(asset,caption=buckets[asset.bucket][0])=>run(async()=>{
     const blob=checked(await db.storage.from(asset.bucket).download(asset.object_path));
     const image=/\.(jpg|png|webp)$/.test(asset.object_path);
     if(image && ['image/jpeg','image/png','image/webp'].includes(blob.type)){
-      setPhoto({url:URL.createObjectURL(blob),local:true,name:buckets[asset.bucket][0]});
+      setPhoto({url:URL.createObjectURL(blob),local:true,name:caption});
       return;
     }
     const link=document.createElement('a');
@@ -178,6 +178,10 @@ function viewPage({page,data,balances,save,post,busy,record,setRecord,upload,pre
     h(Grid,{columns:edit?[...cols,'Actions']:cols,rows:[...(data[table]||[])].sort((a,b)=>String(b.created_at||b.purchased_on||'').localeCompare(String(a.created_at||a.purchased_on||''))).map(row=>({
       id:row.id,cells:[...render(row),...(edit?[h('button',{className:'secondary',disabled:busy,onClick:()=>setRecord(row)},'Edit')]:[])],
     }))}));
+  const photoPreview=photo&&h('section',{className:'card'},h('div',{className:'asset'},
+    h('strong',null,photo.name),h('button',{className:'secondary',onClick:()=>setPhoto(null)},'Close preview')),
+    h('img',{className:'photo',src:photo.url,alt:photo.name}));
+  const photoCell=(row,bucket)=>h(RecordPhotos,{row,bucket,assets:data.media_assets,upload,preview,busy});
   const currency=(rows,col)=>fmt(rows.reduce((sum,row)=>sum+Number(row.quantity)*Number(row[col]),0));
   const stocked=data.products.filter(row=>(balances.get(row.id)||0)>0).length;
   const sales=data.sales_orders.filter(row=>row.status==='fulfilled').length;
@@ -192,9 +196,15 @@ function viewPage({page,data,balances,save,post,busy,record,setRecord,upload,pre
     case 'suppliers': return h(React.Fragment,null,editor,listed(page,['Name','Phone','Notes'],row=>[row.name,row.phone||'—',row.notes||'—'],true));
     case 'customers': return h(React.Fragment,null,editor,listed(page,['Name','Phone','Email'],row=>[row.name,row.phone||'—',row.email||'—'],true));
     case 'purchases': return h(React.Fragment,null,editor,listed(page,['Date','Supplier','Invoice','Shipping'],row=>[row.purchased_on,label(get('suppliers',row.supplier_id),'suppliers'),row.invoice_number||'—',fmt(row.shipping_cost)],true));
-    case 'material_lots': return h(React.Fragment,null,editor,listed(page,['Lot','Material','Received','Available','Unit cost'],row=>[row.name,display(row.material_type),number(row.quantity_purchased)+' '+row.unit,ledgerBalance(row)+' '+row.unit,fmt(row.unit_cost)],true));
+    case 'material_lots': return h(React.Fragment,null,editor,photoPreview,
+      listed(page,['Lot','Material','Received','Available','Unit cost','Photos'],row=>[
+        row.name,display(row.material_type),number(row.quantity_purchased)+' '+row.unit,ledgerBalance(row)+' '+row.unit,fmt(row.unit_cost),
+        photoCell(row,row.material_type==='lace'?'lace-images':'fabric-images'),
+      ],true));
     case 'products': return h(React.Fragment,null,editor,h(StockForm,{key:page,mode:'receive_product',data,balances,post,busy}),
-      listed(page,['SKU','Name','Category','Available','Unit cost','Selling price'],row=>[row.sku,row.name,display(row.category),ledgerBalance(row),fmt(row.cost_price),fmt(row.selling_price)],true));
+      photoPreview,listed(page,['SKU','Name','Category','Available','Unit cost','Selling price','Photos'],row=>[
+        row.sku,row.name,display(row.category),ledgerBalance(row),fmt(row.cost_price),fmt(row.selling_price),photoCell(row,'product-images'),
+      ],true));
     case 'production_batches': return h(React.Fragment,null,h(StockForm,{key:page,mode:'complete_production',data,balances,post,busy}),
       listed(page,['Date','Product','Quantity','Total cost','Cost per unit','Status'],row=>{
         const used=data.material_usage.filter(item=>item.batch_id===row.id);
@@ -212,8 +222,7 @@ function viewPage({page,data,balances,save,post,busy,record,setRecord,upload,pre
         const [title,table,column]=buckets[row.bucket];
         return [title,label(get(table,row[column]),table),new Date(row.created_at).toLocaleDateString('en-IN'),
           h('button',{className:'secondary',disabled:busy,onClick:()=>preview(row)},'Open file')];
-      }),photo&&h('section',{className:'card'},h('div',{className:'asset'},h('strong',null,photo.name),h('button',{className:'secondary',onClick:()=>setPhoto(null)},'Close preview')),
-      h('img',{className:'photo',src:photo.url,alt:photo.name})));
+      }),photoPreview);
     default:return null;
   }
 }
@@ -340,6 +349,29 @@ const buckets={
   'product-images':['Product photos','products','product_id','image/jpeg,image/png,image/webp'],
   'purchase-documents':['Purchase documents','purchases','purchase_id','application/pdf,image/jpeg,image/png,image/webp'],
 };
+function RecordPhotos({row,bucket,assets,upload,preview,busy}){
+  const picker=useRef(null);
+  const [, , column, types]=buckets[bucket];
+  const photos=assets.filter(asset=>asset[column]===row.id &&
+    (asset.bucket==='product-images'||asset.bucket==='fabric-images'||asset.bucket==='lace-images'))
+    .sort((a,b)=>a.created_at.localeCompare(b.created_at)||a.id.localeCompare(b.id));
+
+  return h('div',{className:'inline'},
+    h('input',{ref:picker,type:'file',hidden:true,accept:types,disabled:busy,onChange:event=>{
+      const file=event.currentTarget.files[0];
+      event.currentTarget.value='';
+      if(file) upload(bucket,column,row.id,file);
+    }}),
+    h('button',{type:'button',className:'secondary',disabled:busy,'aria-label':'Add photo for '+row.name,
+      onClick:()=>picker.current.click()},'Add photo'),
+    photos.length>0&&h('details',null,h('summary',null,photos.length===1?'1 photo':photos.length+' photos'),
+      h('div',{className:'inline'},...photos.map((asset,index)=>{
+        const caption=row.name+' · Photo '+(index+1);
+        return h('button',{key:asset.id,type:'button',className:'secondary',disabled:busy,'aria-label':caption,
+          onClick:()=>preview(asset,caption)},'Photo '+(index+1));
+      }))));
+}
+
 function FileForm({data,upload,busy}){
   const [bucket,setBucket]=useState('fabric-images');
   const [,table,column,types]=buckets[bucket];
