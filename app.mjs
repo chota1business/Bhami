@@ -254,7 +254,7 @@ function viewPage({page,data,balances,save,post,busy,record,setRecord,upload,pre
     h('section',{className:'card'},h('h2',null,'Quick actions'),h('div',{className:'inline'},
       ...[['material_lots','Receive fabric or lace'],['production_batches','Complete production'],['sales_orders','Record a sale']].map(([key,title])=>
         h('button',{key,disabled:busy,onClick:()=>move(key)},title)))));
-  const editor=fields[page]&&h(Editor,{key:page,table:page,record,data,save,close:()=>setRecord(null),busy});
+  const editor=fields[page]&&h(Editor,{key:'editor:'+page+':'+(record?.id||'new'),table:page,record,data,save,close:()=>setRecord(null),busy});
   switch(page){
     case 'suppliers': return h(React.Fragment,null,editor,listed(page,['Name','Phone','Notes'],row=>[row.name,row.phone||'—',row.notes||'—'],true));
     case 'customers': return h(React.Fragment,null,editor,listed(page,['Name','Phone','Email'],row=>[row.name,row.phone||'—',row.email||'—'],true));
@@ -264,18 +264,18 @@ function viewPage({page,data,balances,save,post,busy,record,setRecord,upload,pre
         row.name,display(row.material_type),number(row.quantity_purchased)+' '+row.unit,ledgerBalance(row)+' '+row.unit,fmt(row.unit_cost),
         photoCell(row,row.material_type==='lace'?'lace-images':'fabric-images'),
       ],true));
-    case 'products': return h(React.Fragment,null,editor,h(StockForm,{key:page,mode:'receive_product',data,balances,post,busy}),
+    case 'products': return h(React.Fragment,null,editor,h(StockForm,{key:'stock:'+page,mode:'receive_product',data,balances,post,busy}),
       photoPreview,listed(page,['SKU','Name','Category','Available','Unit cost','Selling price','Photos'],row=>[
         row.sku,row.name,display(row.category),ledgerBalance(row),fmt(row.cost_price),fmt(row.selling_price),photoCell(row,'product-images'),
       ],true));
-    case 'production_batches': return h(React.Fragment,null,h(StockForm,{key:page,mode:'complete_production',data,balances,post,busy}),photoPreview,
+    case 'production_batches': return h(React.Fragment,null,h(StockForm,{key:'stock:'+page,mode:'complete_production',data,balances,post,busy}),photoPreview,
       listed(page,['Date','Product','Quantity','Total cost','Cost per unit','Status','Finished product photos'],row=>{
         const used=data.material_usage.filter(item=>item.batch_id===row.id);
         const total=used.reduce((sum,item)=>sum+Number(item.quantity)*Number(item.unit_cost_snapshot),Number(row.tailoring_cost)+Number(row.other_cost));
         return [new Date(row.created_at).toLocaleDateString('en-IN'),label(get('products',row.product_id),'products'),number(row.quantity),fmt(total),fmt(total/Number(row.quantity)),display(row.status),
           get('products',row.product_id)?photoCell(get('products',row.product_id),'product-images'):'—'];
       }));
-    case 'sales_orders': return h(React.Fragment,null,h(StockForm,{key:page,mode:'fulfill_sale',data,balances,post,busy}),
+    case 'sales_orders': return h(React.Fragment,null,h(StockForm,{key:'stock:'+page,mode:'fulfill_sale',data,balances,post,busy}),
       listed(page,['Date','Channel','Customer','Items','Total','Status'],row=>{
         const items=data.sales_items.filter(item=>item.order_id===row.id);
         return [new Date(row.created_at).toLocaleDateString('en-IN'),display(row.channel),label(get('customers',row.customer_id),'customers'),
@@ -345,12 +345,12 @@ function App(){
 }
 
 
-function Field({spec, data={}, record={}, disabled=false}){
+function Field({spec, data={}, record={}, disabled=false, onChange}){
   const [key,title,type='text',required=true] = spec;
   const startingValue = record[key] ?? '';
   const selection = Array.isArray(type) ? type.map(value=>[value,display(value)])
     : Array.isArray(data[type]) ? data[type].map(row=>[row.id,label(row,type)]) : null;
-  const control = selection ? h('select',{name:key,required,defaultValue:startingValue,disabled},
+  const control = selection ? h('select',{name:key,required,defaultValue:startingValue,disabled,onChange},
     h('option',{value:''}, required ? 'Choose…' : 'None'),...selection.map(([value,text])=>h('option',{key:value,value},text)))
     : h('input',{name:key,required,defaultValue:startingValue,disabled,type:['money','amount'].includes(type)?'number':type,
       ...(['money','amount'].includes(type)?{min:0,step:'any'}:{})});
@@ -369,7 +369,9 @@ function Grid({columns,rows}){
 
 function Editor({table,data,save,record,close,busy}){
   const entry=recordLabels[table];
-  const specs = fields[table].filter(spec=>!record || spec[0]!=='quantity_purchased');
+  const [category,setCategory]=useState(record?.category||'');
+  const specs=fields[table].filter(([key])=>
+    (key!=='quantity_purchased'||!record)&&(key!=='size'||category==='dress'));
   return h('section',{className:'card'},h('h2',null,(record?'Edit ':'Add ')+entry),
     h('form',{key:record?.id||'new',onSubmit:event=>{
       event.preventDefault();
@@ -379,8 +381,9 @@ function Editor({table,data,save,record,close,busy}){
         if(!value && !record) return [];
         return [[key,value ? ['money','amount'].includes(type)?Number(value):value : key==='shipping_cost'?0:key==='purchased_on'?record.purchased_on:null]];
       }));
-      save(table,payload,record?.id,()=>{form.reset();close();});
-    }},h('div',{className:'form-grid'},...specs.map(spec=>h(Field,{key:spec[0],spec,data,record:record||{}}))),
+      if(table==='products'&&payload.category==='saree')payload.size=null;
+      save(table,payload,record?.id,()=>{form.reset();setCategory('');close();});
+    }},h('div',{className:'form-grid'},...specs.map(spec=>h(Field,{key:spec[0],spec,data,record:record||{},onChange:spec[0]==='category'?event=>setCategory(event.target.value):undefined}))),
     h('div',{className:'form-footer'},h('button',{disabled:busy},record?'Save changes':'Save '+entry),
       record && h('button',{type:'button',className:'secondary',onClick:close},'Cancel'))));
 }
@@ -419,11 +422,14 @@ function StockForm({mode,data,balances,post,busy}){
       sale&&h(Field,{spec:['channel','Sales channel',['direct','whatsapp','exhibition','online']]}),
       sale&&h(Field,{spec:['customer_id','Customer','customers',false],data})),
     !receipt&&h('fieldset',null,h('legend',null,production?'Materials used':'Products sold'),
-      ...lines.map(line=>h('div',{className:'line',key:line.key},
-        h('label',null,production?'Material lot':'Product',h('select',{required:true,value:line.id,onChange:e=>change(line.key,{id:e.target.value})},
-          h('option',{value:''},'Choose…'),...choices.map(row=>h('option',{value:row.id,key:row.id},row.name+' · '+number(balances.get(row.id)||0)+' available')))),
-        h('label',null,'Quantity',h('input',{type:'number',min:'0.000001',step:'any',required:true,value:line.quantity,onChange:e=>change(line.key,{quantity:e.target.value})})),
-        h('button',{type:'button',className:'secondary',disabled:lines.length===1,onClick:()=>setLines(old=>old.filter(x=>x.key!==line.key))},'Remove'))),
+      ...lines.map(line=>{
+        const unit=production?choices.find(row=>row.id===line.id)?.unit:null;
+        return h('div',{className:'line',key:line.key},
+        h('label',null,production?'Material lot':'Product',h('select',{required:true,value:line.id,onChange:e=>change(line.key,{id:e.target.value,...(production?{quantity:''}:{})})},
+          h('option',{value:''},'Choose…'),...choices.map(row=>h('option',{value:row.id,key:row.id},row.name+' · '+number(balances.get(row.id)||0)+(production?' '+row.unit:'')+' available')))),
+        h('label',null,unit?'Quantity ('+unit+')':'Quantity',h('input',{type:'number',min:'0.000001',step:'any',required:true,value:line.quantity,onChange:e=>change(line.key,{quantity:e.target.value})})),
+        h('button',{type:'button',className:'secondary',disabled:lines.length===1,onClick:()=>setLines(old=>old.filter(x=>x.key!==line.key))},'Remove'));
+      }),
       h('button',{type:'button',className:'secondary',onClick:()=>{const key=next.current++;setLines(old=>[...old,{key,id:'',quantity:''}]);}},'Add line')),
     h('div',{className:'form-footer'},h('button',{disabled:busy},production?'Complete batch':sale?'Record sale':'Receive stock'),
       !receipt&&h('span',null,(production?'Estimated batch cost ':'Estimated sale total ')+fmt(estimate),
