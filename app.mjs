@@ -193,7 +193,8 @@ function viewPage({page,data,balances,save,post,busy,record,setRecord,upload,pre
     h(Grid,{columns:edit?[...cols,'Actions']:cols,rows:[...(data[table]||[])].sort((a,b)=>String(b.created_at||b.purchased_on||'').localeCompare(String(a.created_at||a.purchased_on||''))).map(row=>({
       id:row.id,cells:[...render(row),...(edit?[h('button',{className:'secondary',disabled:busy,onClick:()=>setRecord(row)},'Edit')]:[])],
     }))}));
-  const photoPreview=photo&&h('section',{className:'card'},h('div',{className:'asset'},
+  const photoPreview=photo&&h('section',{className:'card',key:photo.url,
+    ref:node=>node?.scrollIntoView({block:'nearest'})},h('div',{className:'asset'},
     h('strong',null,photo.name),h('button',{className:'secondary',onClick:()=>setPhoto(null)},'Close preview')),
     h('img',{className:'photo',src:photo.url,alt:photo.name}));
   const photoCell=(row,bucket)=>h(RecordPhotos,{row,bucket,assets:data.media_assets,upload,preview,busy});
@@ -383,6 +384,51 @@ const buckets={
   'product-images':['Product photos','products','product_id','image/jpeg,image/png,image/webp'],
   'purchase-documents':['Purchase documents','purchases','purchase_id','application/pdf,image/jpeg,image/png,image/webp'],
 };
+function PhotoThumbnail({asset,caption,preview,busy}){
+  const button=useRef(null);
+  const [image,setImage]=useState(null);
+
+  useEffect(()=>{
+    let active=true;
+    let objectUrl;
+    let observer;
+    const controller=new AbortController();
+    const load=async()=>{
+      observer?.disconnect();
+      try {
+        const blob=checked(await db.storage.from(asset.bucket).download(asset.object_path,{},{
+          signal:controller.signal,
+        }));
+        if(!active)return;
+        if(!['image/jpeg','image/png','image/webp'].includes(blob.type))throw new Error('Unsupported image');
+        objectUrl=URL.createObjectURL(blob);
+        setImage(objectUrl);
+      }catch{
+        if(active)setImage(false);
+      }
+    };
+    if(typeof IntersectionObserver==='function'){
+      observer=new IntersectionObserver(entries=>{
+        if(entries.some(entry=>entry.isIntersecting))load();
+      },{rootMargin:'160px'});
+      observer.observe(button.current);
+    }else{
+      load();
+    }
+    return ()=>{
+      active=false;
+      controller.abort();
+      observer?.disconnect();
+      if(objectUrl)URL.revokeObjectURL(objectUrl);
+    };
+  },[asset.bucket,asset.object_path]);
+
+  return h('button',{ref:button,type:'button',className:'secondary photo-thumbnail',disabled:busy,
+    'aria-label':'Preview '+caption,title:caption,onClick:()=>preview(asset,caption)},
+    image ? h('img',{src:image,alt:'',width:54,height:54,onError:()=>setImage(false)})
+      : h('span',null,image===false?'Preview':'Loading…'));
+}
+
 function RecordPhotos({row,bucket,assets,upload,preview,busy}){
   const picker=useRef(null);
   const [, , column, types]=buckets[bucket];
@@ -398,12 +444,8 @@ function RecordPhotos({row,bucket,assets,upload,preview,busy}){
     }}),
     h('button',{type:'button',className:'secondary',disabled:busy,'aria-label':'Add photo for '+row.name,
       onClick:()=>picker.current.click()},'Add photo'),
-    photos.length>0&&h('details',null,h('summary',null,photos.length===1?'1 photo':photos.length+' photos'),
-      h('div',{className:'inline'},...photos.map((asset,index)=>{
-        const caption=row.name+' · Photo '+(index+1);
-        return h('button',{key:asset.id,type:'button',className:'secondary',disabled:busy,'aria-label':caption,
-          onClick:()=>preview(asset,caption)},'Photo '+(index+1));
-      }))));
+    ...photos.map((asset,index)=>h(PhotoThumbnail,{key:asset.id,asset,
+      caption:row.name+' · Photo '+(index+1),preview,busy})));
 }
 
 function FileForm({data,upload,busy}){
