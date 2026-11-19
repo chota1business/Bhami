@@ -168,7 +168,22 @@ function Workspace({session}){
     canOperate&&pendingStock?.tenant===tenant&&h('div',{className:'notice inline'},
       h('span',null,'A stock request is pending.'),
       h('button',{disabled:busy,onClick:()=>post(pendingStock.payload)},'Retry pending request')),
-    content));
+    content,
+    membership&&h('details',{className:'card'},h('summary',null,'Set or change password'),
+      h('form',{onSubmit:event=>{
+        event.preventDefault();
+        const form=event.currentTarget;
+        const values=new FormData(form);
+        const password=String(values.get('password'));
+        run(async()=>{
+          if(password!==values.get('confirmation'))throw new Error('Passwords must match.');
+          checked(await db.auth.updateUser({password}));
+        },'Password saved. Use it for your next sign-in.',()=>form.reset(),false);
+      }},
+      h('div',{className:'form-grid'},
+        h('label',null,'New password',h('input',{name:'password',type:'password',autoComplete:'new-password',required:true,minLength:12,disabled:busy})),
+        h('label',null,'Confirm password',h('input',{name:'confirmation',type:'password',autoComplete:'new-password',required:true,minLength:12,disabled:busy}))),
+      h('div',{className:'form-footer'},h('button',{disabled:busy},'Save password'))))));
 }
 
 function viewPage({page,data,balances,save,post,busy,record,setRecord,upload,preview,photo,setPhoto,move}){
@@ -246,18 +261,37 @@ function App(){
   if(session) return h(Workspace,{session,key:session.user.id});
   return h('main',{className:'gate'},h('p',{className:'eyebrow muted'},'Business workspace'),
     h('h1',null,'Bhami'),
-    h('section',{className:'card'},h('h2',null,'Sign in'),h('p',{className:'muted'},'We’ll email a sign-in link to your registered address.'),
+    h('section',{className:'card'},h('h2',null,'Sign in'),
       h('form',{onSubmit:async event=>{
-        event.preventDefault();if(busy)return;
-        const email=String(new FormData(event.currentTarget).get('email')).trim();
+        event.preventDefault();
+        if(busy)return;
+        const values=new FormData(event.currentTarget);
         setBusy(true);setNotice(null);
-        try{
-          checked(await db.auth.signInWithOtp({email,options:{shouldCreateUser:false,emailRedirectTo:redirect()}}));
-          setNotice({text:'Check your inbox for the sign-in link.'});
-        }catch(error){setNotice({error:true,text:errText(error)});}
+        try {
+          checked(await db.auth.signInWithPassword({
+            email:String(values.get('email')).trim(), password:String(values.get('password')),
+          }));
+        } catch(error){setNotice({error:true,text:errText(error)});}
         finally{setBusy(false);}
-      }},h('label',null,'Email address',h('input',{name:'email',required:true,type:'email',autoComplete:'email',disabled:busy})),
-        h('button',{disabled:busy},busy?'Sending…':'Email me a sign-in link')),
+      }},
+      h('label',null,'Email address',h('input',{name:'email',required:true,type:'email',autoComplete:'username',disabled:busy})),
+      h('label',null,'Password',h('input',{name:'password',required:true,type:'password',autoComplete:'current-password',disabled:busy})),
+      h('button',{disabled:busy},busy?'Please wait…':'Sign in')),
+      h('details',{className:'form-footer'},h('summary',null,'Need to set a password?'),
+        h('p',{className:'muted'},'Existing members can use an email link once, then set a password in the workspace. If email delivery fails, contact the Bhami administrator.'),
+        h('form',{onSubmit:async event=>{
+          event.preventDefault();
+          if(busy)return;
+          const email=String(new FormData(event.currentTarget).get('email')).trim();
+          setBusy(true);setNotice(null);
+          try {
+            checked(await db.auth.signInWithOtp({email,options:{shouldCreateUser:false,emailRedirectTo:redirect()}}));
+            setNotice({text:'Check your inbox for the sign-in link.'});
+          } catch(error){setNotice({error:true,text:errText(error)});}
+          finally{setBusy(false);}
+        }},
+        h('label',null,'Email address for sign-in link',h('input',{name:'email',required:true,type:'email',autoComplete:'email',disabled:busy})),
+        h('button',{disabled:busy,className:'secondary'},'Email me a sign-in link'))),
       notice&&h('p',{className:'notice '+(notice.error?'error':''),role:notice.error?'alert':'status'},notice.text)));
 }
 
