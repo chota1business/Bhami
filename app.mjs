@@ -19,6 +19,11 @@ const fields = {
   products:[['name','Product name'],['sku','SKU'],['category','Category',['saree','dress']],['source','Source',['ready_made','in_house','external']],['size','Size','text',false],['cost_price','Unit cost','money'],['selling_price','Selling price','money']],
   customers:[['name','Customer name'],['phone','Phone','tel',false],['email','Email','email',false]],
 };
+const recordLabels={
+  suppliers:'supplier',purchases:'purchase',material_lots:'material lot',products:'product',
+  customers:'customer',production_batches:'production batch',sales_orders:'sale',media_assets:'file',
+};
+const postedTables=['production_batches','sales_orders'];
 const tables = [...Object.keys(names).filter(key => key !== 'Overview'),'inventory_movements','material_usage','sales_items'];
 const label = (row, table) => row?.name || (table==='purchases' ? row?.invoice_number || row?.purchased_on : null) || '—';
 const redirect = () => new URL('./',window.location.href).href;
@@ -43,6 +48,7 @@ function Workspace({session}){
   const [busy,setBusy]=useState(false);
   const [notice,setNotice]=useState(null);
   const [photo,setPhoto]=useState(null);
+  const [deletion,setDeletion]=useState(null);
   const [revision,setRevision]=useState(0);
   const [pendingStock,setPendingStock]=useState(null);
   const active=useRef(false);
@@ -91,6 +97,20 @@ function Workspace({session}){
     const query=id?db.from(table).update(payload).eq('business_id',tenant).eq('id',id):db.from(table).insert({business_id:tenant,...payload});
     checked(await query.select('id').single());
   },'Record saved.',done);
+
+  const remove=({table,row})=>run(async()=>{
+    if(membership?.role!=='owner')throw new Error('Only the business owner can delete entries.');
+    if(table==='media_assets'){
+      const asset=checked(await db.from(table).select('bucket,object_path').eq('business_id',tenant).eq('id',row.id).single());
+      checked(await db.storage.from(asset.bucket).remove([asset.object_path]));
+    }
+    const result=await db.from(table).delete().eq('business_id',tenant).eq('id',row.id).select('id').maybeSingle();
+    if(result.error?.code==='23503')throw new Error('This entry is linked to other records. Remove eligible linked entries first.');
+    if(!checked(result))throw new Error('This entry is no longer available for deletion.');
+  },'Entry deleted.',()=>{
+    if(record?.id===row.id)setRecord(null);
+    setPhoto(null);
+  });
 
   const post=(payload,done)=>run(async()=>{
     const stored=JSON.parse(sessionStorage.getItem(pendingKey)||'null');
@@ -147,10 +167,11 @@ function Workspace({session}){
     }
   }
   const move=next=>{setRecord(null);setPhoto(null);setPage(next);setNotice(null);};
+  const requestDelete=(table,row)=>setDeletion({table,row,step:1});
   let content=null;
   if(memberships && !membership) content=h('div',{className:'card'},'Your account has no business membership. Ask the business owner to add you.');
   else if(membership && !canOperate) content=h('div',{className:'card'},'Your staff membership is active. This account has access to its membership and business details.');
-  else if(data?.tenant===tenant) content=viewPage({page,data,balances,save,post,busy,record,setRecord,upload,preview,photo,setPhoto,move});
+  else if(data?.tenant===tenant) content=viewPage({page,data,balances,save,post,busy,record,setRecord,upload,preview,photo,setPhoto,move,requestDelete:membership?.role==='owner'?requestDelete:null});
   else content=h('p',{role:'status'},'Loading business records…');
 
   return h('div',{className:'layout'},h('aside',null,
@@ -169,7 +190,8 @@ function Workspace({session}){
       h('span',null,'A stock request is pending.'),
       h('button',{disabled:busy,onClick:()=>post(pendingStock.payload)},'Retry pending request')),
     content,
-    membership&&h('details',{className:'card'},h('summary',null,'Set or change password'),
+    deletion&&h(DeleteDialog,{deletion,setDeletion,remove}),
+    membership&&page==='Overview'&&h('details',{className:'card'},h('summary',null,'Set or change password'),
       h('form',{onSubmit:event=>{
         event.preventDefault();
         const form=event.currentTarget;
@@ -186,12 +208,37 @@ function Workspace({session}){
       h('div',{className:'form-footer'},h('button',{disabled:busy},'Save password'))))));
 }
 
-function viewPage({page,data,balances,save,post,busy,record,setRecord,upload,preview,photo,setPhoto,move}){
+function DeleteDialog({deletion,setDeletion,remove}){
+  const {table,row,step}=deletion;
+  const entry=row.name||row.invoice_number||recordLabels[table];
+  const close=()=>setDeletion(null);
+  return h('dialog',{ref:node=>{if(node&&!node.open)node.showModal();},
+    'aria-labelledby':'delete-heading',onCancel:close},
+    h('h2',{id:'delete-heading'},step===1?'Delete entry?':'Confirm permanent deletion'),
+    h('p',null,step===1?'Selected entry: '+entry+'.':'Delete '+entry+' permanently? This cannot be undone.'),
+    h('div',{className:'form-footer'},
+      h('button',{type:'button',autoFocus:true,className:'secondary',onClick:close},'Cancel'),
+      h('button',{type:'button',className:'delete-action',onClick:()=>{
+        if(step===1){setDeletion({...deletion,step:2});return;}
+        close();
+        remove(deletion);
+      }},step===1?'Continue':'Delete permanently')));
+}
+
+function viewPage({page,data,balances,save,post,busy,record,setRecord,upload,preview,photo,setPhoto,move,requestDelete}){
   const get=(table,id)=>data[table].find(row=>row.id===id);
   const ledgerBalance=row=>number(balances.get(row.id)||0);
   const listed=(table,cols,render,edit=false)=>h('section',{className:'card'},h('h2',null,names[table]),
-    h(Grid,{columns:edit?[...cols,'Actions']:cols,rows:[...(data[table]||[])].sort((a,b)=>String(b.created_at||b.purchased_on||'').localeCompare(String(a.created_at||a.purchased_on||''))).map(row=>({
-      id:row.id,cells:[...render(row),...(edit?[h('button',{className:'secondary',disabled:busy,onClick:()=>setRecord(row)},'Edit')]:[])],
+    h(Grid,{columns:edit||requestDelete?[...cols,'Actions']:cols,rows:[...(data[table]||[])].sort((a,b)=>String(b.created_at||b.purchased_on||'').localeCompare(String(a.created_at||a.purchased_on||''))).map(row=>({
+      id:row.id,cells:[...render(row),...(edit||requestDelete?[h('div',{className:'inline'},
+        edit&&h('button',{className:'secondary',disabled:busy,onClick:()=>setRecord(row)},'Edit'),
+        requestDelete&&h('button',{className:'delete-action',disabled:busy,onClick:()=>{
+          if(postedTables.includes(table)&&row.status!=='draft'){
+            window.alert('This entry is part of stock or sales history and cannot be deleted.');
+            return;
+          }
+          requestDelete(table,row);
+        }},'Delete'))]:[])],
     }))}));
   const photoPreview=photo&&h('section',{className:'card',key:photo.url,
     ref:node=>node?.scrollIntoView({block:'nearest'})},h('div',{className:'asset'},
@@ -221,11 +268,12 @@ function viewPage({page,data,balances,save,post,busy,record,setRecord,upload,pre
       photoPreview,listed(page,['SKU','Name','Category','Available','Unit cost','Selling price','Photos'],row=>[
         row.sku,row.name,display(row.category),ledgerBalance(row),fmt(row.cost_price),fmt(row.selling_price),photoCell(row,'product-images'),
       ],true));
-    case 'production_batches': return h(React.Fragment,null,h(StockForm,{key:page,mode:'complete_production',data,balances,post,busy}),
-      listed(page,['Date','Product','Quantity','Total cost','Cost per unit','Status'],row=>{
+    case 'production_batches': return h(React.Fragment,null,h(StockForm,{key:page,mode:'complete_production',data,balances,post,busy}),photoPreview,
+      listed(page,['Date','Product','Quantity','Total cost','Cost per unit','Status','Finished product photos'],row=>{
         const used=data.material_usage.filter(item=>item.batch_id===row.id);
         const total=used.reduce((sum,item)=>sum+Number(item.quantity)*Number(item.unit_cost_snapshot),Number(row.tailoring_cost)+Number(row.other_cost));
-        return [new Date(row.created_at).toLocaleDateString('en-IN'),label(get('products',row.product_id),'products'),number(row.quantity),fmt(total),fmt(total/Number(row.quantity)),display(row.status)];
+        return [new Date(row.created_at).toLocaleDateString('en-IN'),label(get('products',row.product_id),'products'),number(row.quantity),fmt(total),fmt(total/Number(row.quantity)),display(row.status),
+          get('products',row.product_id)?photoCell(get('products',row.product_id),'product-images'):'—'];
       }));
     case 'sales_orders': return h(React.Fragment,null,h(StockForm,{key:page,mode:'fulfill_sale',data,balances,post,busy}),
       listed(page,['Date','Channel','Customer','Items','Total','Status'],row=>{
@@ -306,7 +354,10 @@ function Field({spec, data={}, record={}, disabled=false}){
     h('option',{value:''}, required ? 'Choose…' : 'None'),...selection.map(([value,text])=>h('option',{key:value,value},text)))
     : h('input',{name:key,required,defaultValue:startingValue,disabled,type:['money','amount'].includes(type)?'number':type,
       ...(['money','amount'].includes(type)?{min:0,step:'any'}:{})});
-  return h('label',null,title,control);
+  return h('label',null,title,control,key==='source'&&h('small',{className:'muted source-hint'},
+    h('span',null,'* Ready-made — bought as a finished item for resale.'),
+    h('span',null,'* In-house — made by your own team.'),
+    h('span',null,'* External — made to order by an outside tailor or production partner.')));
 }
 
 function Grid({columns,rows}){
@@ -317,8 +368,9 @@ function Grid({columns,rows}){
 }
 
 function Editor({table,data,save,record,close,busy}){
+  const entry=recordLabels[table];
   const specs = fields[table].filter(spec=>!record || spec[0]!=='quantity_purchased');
-  return h('section',{className:'card'},h('h2',null,record?'Edit record':'Add record'),
+  return h('section',{className:'card'},h('h2',null,(record?'Edit ':'Add ')+entry),
     h('form',{key:record?.id||'new',onSubmit:event=>{
       event.preventDefault();
       const form=event.currentTarget, values=new FormData(form);
@@ -329,7 +381,7 @@ function Editor({table,data,save,record,close,busy}){
       }));
       save(table,payload,record?.id,()=>{form.reset();close();});
     }},h('div',{className:'form-grid'},...specs.map(spec=>h(Field,{key:spec[0],spec,data,record:record||{}}))),
-    h('div',{className:'form-footer'},h('button',{disabled:busy},record?'Save changes':'Add record'),
+    h('div',{className:'form-footer'},h('button',{disabled:busy},record?'Save changes':'Save '+entry),
       record && h('button',{type:'button',className:'secondary',onClick:close},'Cancel'))));
 }
 
