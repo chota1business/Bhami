@@ -110,6 +110,15 @@ function Workspace({session}){
       checked(result);
       return;
     }
+    if(table==='products'&&id){
+      const {stock_quantity,unit,...product}=payload;
+      checked(await db.rpc('edit_product_inventory',{
+        tenant,item_id:id,product,
+        previous_quantity:record.stock_quantity,previous_unit:record.unit||'piece',
+        new_quantity:stock_quantity,new_unit:unit,
+      }));
+      return;
+    }
     const query=id?db.from(table).update(payload).eq('business_id',tenant).eq('id',id):db.from(table).insert({business_id:tenant,...payload});
     checked(await query.select('id').single());
   },'Record saved.',done);
@@ -267,7 +276,7 @@ function viewPage({page,data,balances,save,post,busy,record,setRecord,upload,pre
   const listed=(table,cols,render,edit=false,rows=data[table]||[])=>h('section',{className:'card'},h('h2',null,names[table]),
     h(Grid,{columns:edit||requestDelete?[...cols,'Actions']:cols,rows:[...rows].sort((a,b)=>String(b.created_at||b.purchased_on||'').localeCompare(String(a.created_at||a.purchased_on||''))).map(row=>({
       id:row.id,cells:[...render(row),...(edit||requestDelete?[h('div',{className:'inline'},
-        edit&&h('button',{className:'secondary',disabled:busy,onClick:()=>setRecord(row)},'Edit'),
+        edit&&h('button',{className:'secondary',disabled:busy,onClick:()=>setRecord(table==='products'?{...row,stock_quantity:Number((balances.get(row.id)||0).toFixed(3))}:row)},'Edit'),
         requestDelete&&h('button',{className:'delete-action',disabled:busy,onClick:()=>{
           if(postedTables.includes(table)&&row.status!=='draft'){
             window.alert('This entry is part of stock or sales history and cannot be deleted.');
@@ -360,7 +369,7 @@ function SaleInvoice({order,items,businessName,customer,products,close}){
   const soldOn=order?new Date(order.created_at).toLocaleDateString('en-IN'):'';
   const rows=items.map(item=>{
     const product=products.find(row=>row.id===item.product_id);
-    return {id:item.id,cells:[product?.sku||'—',product?.name||'Product',number(item.quantity)+' '+unitLabels[product?.unit||'piece'].toLowerCase(),
+    return {id:item.id,cells:[product?.sku||'—',product?.name||'Product',number(item.quantity)+' '+unitLabels[item.unit_snapshot||product?.unit||'piece'].toLowerCase(),
       fmt(item.unit_price),fmt(Number(item.quantity)*Number(item.unit_price))]};
   });
   const whatsappText=order&&rows.length?[
@@ -448,8 +457,8 @@ function Field({spec, data={}, record={}, disabled=false, onChange}){
   const control = selection ? h('select',{name:key,required,defaultValue:startingValue,disabled,onChange},
     h('option',{value:''}, required ? 'Choose…' : 'None'),...selection.map(([value,text])=>h('option',{key:value,value},text)))
     : h('input',{name:key,required,defaultValue:startingValue,disabled,type:['money','amount'].includes(type)?'number':type,
-      ...(['money','amount'].includes(type)?{min:0,step:'any'}:{})});
-  return h('label',null,title,control,key==='opening_quantity'&&h('small',{className:'muted'},'Leave blank or enter zero if there is no stock yet.'),key==='sku'&&h('small',{className:'muted'},record.id?'Keep the existing SKU or enter a custom one.':'Leave blank to assign the next SAR or DRS code when you save.'),key==='source'&&h('small',{className:'muted source-hint'},
+      ...(['money','amount'].includes(type)?{min:0,step:key==='stock_quantity'?0.001:'any'}:{})});
+  return h('label',null,title,control,key==='stock_quantity'&&h('small',{className:'muted'},'Enter the total currently in stock, in the selected unit.'),key==='opening_quantity'&&h('small',{className:'muted'},'Leave blank or enter zero if there is no stock yet.'),key==='sku'&&h('small',{className:'muted'},record.id?'Keep the existing SKU or enter a custom one.':'Leave blank to assign the next SAR or DRS code when you save.'),key==='source'&&h('small',{className:'muted source-hint'},
     h('span',null,'* Ready-made — bought as a finished item for resale.'),
     h('span',null,'* In-house — made by your own team.'),
     h('span',null,'* External — made to order by an outside tailor or production partner.')));
@@ -467,7 +476,10 @@ function Editor({table,data,save,record,close,busy}){
   const [category,setCategory]=useState(record?.category||'');
   const specs=fields[table].filter(([key])=>
     (key!=='quantity_purchased'||!record)&&(key!=='size'||category==='dress'));
-  if(table==='products'&&!record)specs.push(['opening_quantity','Opening quantity','amount',false],['unit','Stock unit',['piece','metre'],true,'piece']);
+  if(table==='products'){
+    specs.push(record?['stock_quantity','Current stock quantity','amount']:['opening_quantity','Opening quantity','amount',false],
+      ['unit','Stock unit',['piece','metre'],true,'piece']);
+  }
   return h('section',{className:table==='products'?'card product-editor':'card'},h('h2',null,(record?'Edit ':'Add ')+entry),
     h('form',{key:record?.id||'new',onSubmit:event=>{
       event.preventDefault();
