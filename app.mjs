@@ -88,10 +88,10 @@ function Workspace({session}){
     if(active.current) return;
     active.current=true;setBusy(true);setNotice(null);
     try{
-      await fn();
+      const result=await fn();
       if(reload) setRevision(value=>value+1);
       if(ok) setNotice({text:ok});
-      done?.();
+      done?.(result);
     }catch(error){setNotice({error:true,text:errText(error)});}
     finally{active.current=false;setBusy(false);}
   };
@@ -120,7 +120,7 @@ function Workspace({session}){
       return;
     }
     const query=id?db.from(table).update(payload).eq('business_id',tenant).eq('id',id):db.from(table).insert({business_id:tenant,...payload});
-    checked(await query.select('id').single());
+    return checked(await query.select('id').single());
   },'Record saved.',done);
 
   const restoreProduct=row=>run(async()=>{
@@ -345,7 +345,7 @@ function viewPage({page,data,balances,save,post,busy,record,setRecord,upload,pre
         return [new Date(row.created_at).toLocaleDateString('en-IN'),label(get('products',row.product_id),'products'),number(row.quantity),fmt(total),fmt(total/Number(row.quantity)),display(row.status),
           get('products',row.product_id)?photoCell(get('products',row.product_id),'product-images'):'—'];
       }));
-    case 'sales_orders': return h(React.Fragment,null,h(StockForm,{key:'stock:'+page,mode:'fulfill_sale',data,balances,post,busy}),
+    case 'sales_orders': return h(React.Fragment,null,h(StockForm,{key:'stock:'+page,mode:'fulfill_sale',data,balances,post,busy,save}),
       listed(page,['Date','Channel','Customer','Items','Total','Status','Invoice'],row=>{
         const items=data.sales_items.filter(item=>item.order_id===row.id);
         return [new Date(row.created_at).toLocaleDateString('en-IN'),display(row.channel),label(get('customers',row.customer_id),'customers'),
@@ -491,14 +491,17 @@ function Editor({table,data,save,record,close,busy}){
         return [[key,value ? ['money','amount'].includes(type)?Number(value):value : key==='shipping_cost'?0:key==='purchased_on'?record.purchased_on:null]];
       }));
       if(table==='products'&&payload.category==='saree')payload.size=null;
-      save(table,payload,record?.id,()=>{form.reset();setCategory('');close();});
+      save(table,payload,record?.id,saved=>{form.reset();setCategory('');close(saved);});
     }},h('div',{className:'form-grid'},...specs.map(spec=>h(Field,{key:spec[0],spec,data,record:record||{},onChange:spec[0]==='category'?event=>setCategory(event.target.value):undefined}))),
     h('div',{className:'form-footer'},h('button',{disabled:busy},record?'Save changes':'Save '+entry),
       record && h('button',{type:'button',className:'secondary',onClick:close},'Cancel'))));
 }
 
-function StockForm({mode,data,balances,post,busy}){
+function StockForm({mode,data,balances,post,busy,save}){
   const [lines,setLines]=useState([{key:0,id:'',quantity:''}]);
+  const [customerId,setCustomerId]=useState('');
+  const [addingCustomer,setAddingCustomer]=useState(false);
+  const [newCustomer,setNewCustomer]=useState(null);
   const [output,setOutput]=useState('');
   const [receiptUnit,setReceiptUnit]=useState('');
   const [units,setUnits]=useState('');
@@ -515,14 +518,26 @@ function StockForm({mode,data,balances,post,busy}){
   },0);
   const estimate=estimates+Number(tailoring||0)+Number(other||0);
   const change=(key,patch)=>setLines(old=>old.map(line=>line.key===key?{...line,...patch}:line));
+  const customers=newCustomer&&!data.customers.some(row=>row.id===newCustomer.id)?
+    [...data.customers,newCustomer]:data.customers;
+  const saveCustomer=(table,payload,id,done)=>save(table,payload,id,saved=>done({...saved,name:payload.name}));
   return h('section',{className:'card'},h('h2',null,production?'Complete a batch':sale?'Record a fulfilled sale':'Receive finished stock'),
+    sale&&addingCustomer&&h('div',{className:'sale-customer-editor'},
+      h(Editor,{table:'customers',data,save:saveCustomer,busy,close:saved=>{
+        if(saved){
+          setNewCustomer(saved);
+          setCustomerId(saved.id);
+        }
+        setAddingCustomer(false);
+      }}),
+      h('button',{type:'button',className:'secondary',disabled:busy,onClick:()=>setAddingCustomer(false)},'Cancel adding customer')),
     h('form',{onSubmit:event=>{
       event.preventDefault();
       const form=event.currentTarget, values=new FormData(form);
       const items=lines.map(({id,quantity})=>({id,quantity:Number(quantity)}));
-      const details=production?{materials:items,tailoring_cost:Number(tailoring||0),other_cost:Number(other||0)}:sale?{items,channel:values.get('channel'),customer_id:values.get('customer_id')||null}:{unit:receiptUnit};
+      const details=production?{materials:items,tailoring_cost:Number(tailoring||0),other_cost:Number(other||0)}:sale?{items,channel:values.get('channel'),customer_id:customerId||null}:{unit:receiptUnit};
       post({operation:mode,item_id:sale?null:output,units:sale?null:Number(units),details},()=>{
-        form.reset(); setOutput('');setReceiptUnit('');setUnits('');setTailoring('');setOther('');setLines([{key:0,id:'',quantity:''}]);
+        form.reset();setCustomerId('');setNewCustomer(null);setAddingCustomer(false);setOutput('');setReceiptUnit('');setUnits('');setTailoring('');setOther('');setLines([{key:0,id:'',quantity:''}]);
       });
     }},
     h('div',{className:'form-grid'},
@@ -540,7 +555,11 @@ function StockForm({mode,data,balances,post,busy}){
       production&&h('label',null,'Tailoring cost',h('input',{type:'number',min:0,step:'any',value:tailoring,onChange:e=>setTailoring(e.target.value)})),
       production&&h('label',null,'Other batch costs',h('input',{type:'number',min:0,step:'any',value:other,onChange:e=>setOther(e.target.value)})),
       sale&&h(Field,{spec:['channel','Sales channel',['direct','whatsapp','exhibition','online']]}),
-      sale&&h(Field,{spec:['customer_id','Customer','customers',false],data})),
+      sale&&h('div',{className:'sale-customer-picker'},
+        h('label',null,'Customer',h('select',{value:customerId,disabled:busy,onChange:event=>setCustomerId(event.target.value)},
+          h('option',{value:''},'Walk-in customer'),
+          ...customers.map(row=>h('option',{key:row.id,value:row.id},row.name)))),
+        !addingCustomer&&h('button',{type:'button',className:'secondary',disabled:busy,onClick:()=>setAddingCustomer(true)},'Add new customer'))),
     !receipt&&h('fieldset',null,h('legend',null,production?'Materials used':'Products sold'),
       ...lines.map(line=>{
         const chosen=choices.find(row=>row.id===line.id);
@@ -552,7 +571,7 @@ function StockForm({mode,data,balances,post,busy}){
         h('button',{type:'button',className:'secondary',disabled:lines.length===1,onClick:()=>setLines(old=>old.filter(x=>x.key!==line.key))},'Remove'));
       }),
       h('button',{type:'button',className:'secondary',onClick:()=>{const key=next.current++;setLines(old=>[...old,{key,id:'',quantity:''}]);}},'Add line')),
-    h('div',{className:'form-footer'},h('button',{disabled:busy},production?'Complete batch':sale?'Record sale':'Receive stock'),
+    h('div',{className:'form-footer'},h('button',{disabled:busy||addingCustomer},production?'Complete batch':sale?'Record sale':'Receive stock'),
       !receipt&&h('span',null,(production?'Estimated batch cost ':'Estimated sale total ')+fmt(estimate),
         production&&Number(units)>0?' · '+fmt(estimate/Number(units))+' per unit':''))));
 }
