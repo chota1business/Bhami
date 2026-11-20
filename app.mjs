@@ -16,7 +16,7 @@ const fields = {
   suppliers:[['name','Supplier name'],['phone','Phone','tel',false],['notes','Notes','text',false]],
   purchases:[['supplier_id','Supplier','suppliers',false],['purchased_on','Purchase date','date',false],['invoice_number','Invoice number','text',false],['shipping_cost','Shipping cost','money',false],['notes','Notes','text',false]],
   material_lots:[['name','Lot name'],['material_type','Material',['fabric','lace','embellishment']],['purchase_id','Purchase','purchases',false],['quantity_purchased','Quantity received','amount'],['unit','Unit',['metre','piece','roll']],['unit_cost','Cost per unit','money']],
-  products:[['name','Product name'],['sku','SKU'],['category','Category',['saree','dress']],['source','Source',['ready_made','in_house','external']],['size','Size','text',false],['cost_price','Unit cost','money'],['selling_price','Selling price','money']],
+  products:[['name','Product name'],['sku','SKU','text',false],['category','Category',['saree','dress']],['source','Source',['ready_made','in_house','external']],['size','Size','text',false],['cost_price','Unit cost','money'],['selling_price','Selling price','money']],
   customers:[['name','Customer name'],['phone','Phone','tel',false],['email','Email','email',false]],
 };
 const recordLabels={
@@ -298,7 +298,7 @@ function viewPage({page,data,balances,save,post,busy,record,setRecord,upload,pre
       listed(page,['Date','Channel','Customer','Items','Total','Status','Invoice'],row=>{
         const items=data.sales_items.filter(item=>item.order_id===row.id);
         return [new Date(row.created_at).toLocaleDateString('en-IN'),display(row.channel),label(get('customers',row.customer_id),'customers'),
-          items.map(item=>number(item.quantity)+' × '+label(get('products',item.product_id),'products')).join(', '),currency(items,'unit_price'),display(row.status),row.status==='fulfilled'&&items.length>0?
+          items.map(item=>number(item.quantity)+' × '+label(get('products',item.product_id),'products')).join(', '),currency(items,'unit_price'),row.is_sample?'Sample — stock restored':display(row.status),row.status==='fulfilled'&&items.length>0?
             h('button',{type:'button',className:'secondary',disabled:busy,onClick:()=>setInvoiceId(row.id)},'View invoice'):'—'];
       }));
     case 'media_assets': return h(React.Fragment,null,h(FileForm,{data,upload,busy}),
@@ -396,7 +396,7 @@ function Field({spec, data={}, record={}, disabled=false, onChange}){
     h('option',{value:''}, required ? 'Choose…' : 'None'),...selection.map(([value,text])=>h('option',{key:value,value},text)))
     : h('input',{name:key,required,defaultValue:startingValue,disabled,type:['money','amount'].includes(type)?'number':type,
       ...(['money','amount'].includes(type)?{min:0,step:'any'}:{})});
-  return h('label',null,title,control,key==='source'&&h('small',{className:'muted source-hint'},
+  return h('label',null,title,control,key==='sku'&&h('small',{className:'muted'},record.id?'Keep the existing SKU or enter a custom one.':'Leave blank to assign the next SAR or DRS code when you save.'),key==='source'&&h('small',{className:'muted source-hint'},
     h('span',null,'* Ready-made — bought as a finished item for resale.'),
     h('span',null,'* In-house — made by your own team.'),
     h('span',null,'* External — made to order by an outside tailor or production partner.')));
@@ -420,6 +420,7 @@ function Editor({table,data,save,record,close,busy}){
       const form=event.currentTarget, values=new FormData(form);
       const payload=Object.fromEntries(specs.flatMap(([key,,type])=>{
         const value=String(values.get(key)||'').trim();
+        if(key==='sku'&&!value)return [];
         if(!value && !record) return [];
         return [[key,value ? ['money','amount'].includes(type)?Number(value):value : key==='shipping_cost'?0:key==='purchased_on'?record.purchased_on:null]];
       }));
