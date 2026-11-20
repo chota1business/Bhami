@@ -114,7 +114,19 @@ function Workspace({session}){
     checked(await query.select('id').single());
   },'Record saved.',done);
 
-  const remove=({table,row})=>run(async()=>{
+  const restoreProduct=row=>run(async()=>{
+    checked(await db.rpc('remove_or_restore_product',{tenant,item_id:row.id,restore:true}));
+  },'Product restored to the active list.');
+
+  const remove=({table,row})=>{
+    if(table==='products'){
+      run(async()=>{
+        const outcome=checked(await db.rpc('remove_or_restore_product',{tenant,item_id:row.id,restore:false}));
+        setNotice({text:outcome==='archived'?'Product moved to Archived products. Its history is preserved.':'Product deleted.'});
+      },null,()=>{if(record?.id===row.id)setRecord(null);setPhoto(null);});
+      return;
+    }
+    run(async()=>{
     if(membership?.role!=='owner')throw new Error('Only the business owner can delete entries.');
     if(table==='media_assets'){
       const asset=checked(await db.from(table).select('bucket,object_path').eq('business_id',tenant).eq('id',row.id).single());
@@ -126,7 +138,8 @@ function Workspace({session}){
   },'Entry deleted.',()=>{
     if(record?.id===row.id)setRecord(null);
     setPhoto(null);
-  });
+    });
+  };
 
   const post=(payload,done)=>run(async()=>{
     const stored=JSON.parse(sessionStorage.getItem(pendingKey)||'null');
@@ -191,7 +204,7 @@ function Workspace({session}){
   let content=null;
   if(memberships && !membership) content=h('div',{className:'card'},'Your account has no business membership. Ask the business owner to add you.');
   else if(membership && !canOperate) content=h('div',{className:'card'},'Your staff membership is active. This account has access to its membership and business details.');
-  else if(data?.tenant===tenant) content=viewPage({page,data,balances,save,post,busy,record,setRecord,upload,preview,photo,setPhoto,move,search,setSearch,invoiceId,setInvoiceId,businessName:membership.businesses?.name,requestDelete:membership?.role==='owner'?requestDelete:null});
+  else if(data?.tenant===tenant) content=viewPage({page,data,balances,save,post,busy,record,setRecord,upload,preview,photo,setPhoto,move,search,setSearch,invoiceId,setInvoiceId,businessName:membership.businesses?.name,restoreProduct,requestDelete:membership?.role==='owner'?requestDelete:null});
   else content=h('p',{role:'status'},'Loading business records…');
 
   return h('div',{className:'layout'},h('aside',null,
@@ -232,20 +245,23 @@ function DeleteDialog({deletion,setDeletion,remove}){
   const {table,row,step}=deletion;
   const entry=row.name||row.invoice_number||recordLabels[table];
   const close=()=>setDeletion(null);
+  const isProduct=table==='products';
   return h('dialog',{ref:node=>{if(node&&!node.open)node.showModal();},
     'aria-labelledby':'delete-heading',onCancel:close},
-    h('h2',{id:'delete-heading'},step===1?'Delete entry?':'Confirm permanent deletion'),
-    h('p',null,step===1?'Selected entry: '+entry+'.':'Delete '+entry+' permanently? This cannot be undone.'),
+    h('h2',{id:'delete-heading'},step===1?'Delete entry?':isProduct?'Confirm product removal':'Confirm permanent deletion'),
+    h('p',null,step===1?'Selected entry: '+entry+'.':isProduct?
+      'Remove '+entry+' from active products? Products with linked records will be archived and can be restored. Unlinked products are permanently deleted.':
+      'Delete '+entry+' permanently? This cannot be undone.'),
     h('div',{className:'form-footer'},
       h('button',{type:'button',autoFocus:true,className:'secondary',onClick:close},'Cancel'),
       h('button',{type:'button',className:'delete-action',onClick:()=>{
         if(step===1){setDeletion({...deletion,step:2});return;}
         close();
         remove(deletion);
-      }},step===1?'Continue':'Delete permanently')));
+      }},step===1?'Continue':isProduct?'Remove product':'Delete permanently')));
 }
 
-function viewPage({page,data,balances,save,post,busy,record,setRecord,upload,preview,photo,setPhoto,move,search,setSearch,invoiceId,setInvoiceId,businessName,requestDelete}){
+function viewPage({page,data,balances,save,post,busy,record,setRecord,upload,preview,photo,setPhoto,move,search,setSearch,invoiceId,setInvoiceId,businessName,restoreProduct,requestDelete}){
   const get=(table,id)=>data[table].find(row=>row.id===id);
   const ledgerBalance=row=>number(balances.get(row.id)||0);
   const listed=(table,cols,render,edit=false,rows=data[table]||[])=>h('section',{className:'card'},h('h2',null,names[table]),
@@ -279,7 +295,7 @@ function viewPage({page,data,balances,save,post,busy,record,setRecord,upload,pre
     return h(SaleInvoice,{order,items,businessName,customer:get('customers',order?.customer_id),
       products:data.products,close:()=>setInvoiceId(null)});
   }
-  const stocked=data.products.filter(row=>(balances.get(row.id)||0)>0).length;
+  const stocked=data.products.filter(row=>!row.archived_at&&(balances.get(row.id)||0)>0).length;
   const sales=data.sales_orders.filter(row=>row.status==='fulfilled').length;
   if(page==='Overview') return h(React.Fragment,null,
     h('div',{className:'metrics'},...[[data.material_lots.length,'Material lots'],[stocked,'Products in stock'],[data.production_batches.length,'Production batches'],[sales,'Fulfilled sales']].map(([value,title])=>
@@ -297,12 +313,22 @@ function viewPage({page,data,balances,save,post,busy,record,setRecord,upload,pre
         row.name,display(row.material_type),number(row.quantity_purchased)+' '+row.unit,ledgerBalance(row)+' '+row.unit,fmt(row.unit_cost),
         photoCell(row,row.material_type==='lace'?'lace-images':'fabric-images'),
       ],true,data.material_lots.filter(row=>matches(row.name,row.material_type,row.unit,get('purchases',row.purchase_id)?.invoice_number))));
-    case 'products': return h(React.Fragment,null,editor,
-      h('details',{className:'card'},h('summary',null,'Add stock to an existing product'),
-        h(StockForm,{mode:'receive_product',data,balances,post,busy})),
-      photoPreview,searchBox('Search products'),listed(page,['SKU','Name','Category','Available','Unit cost','Selling price','Photos'],row=>[
-        row.sku,row.name,display(row.category),ledgerBalance(row)+' '+unitLabels[row.unit||'piece'].toLowerCase(),fmt(row.cost_price),fmt(row.selling_price),photoCell(row,'product-images'),
-      ],true,data.products.filter(row=>matches(row.name,row.sku,row.category,row.source,row.size,unitLabels[row.unit||'piece']))));
+    case 'products': {
+      const productMatches=row=>matches(row.name,row.sku,row.category,row.source,row.size,unitLabels[row.unit||'piece']);
+      const archived=data.products.filter(row=>row.archived_at&&productMatches(row));
+      const active=data.products.filter(row=>!row.archived_at&&productMatches(row));
+      const available=row=>ledgerBalance(row)+' '+unitLabels[row.unit||'piece'].toLowerCase();
+      return h(React.Fragment,null,editor,
+        h('details',{className:'card'},h('summary',null,'Add stock to an existing product'),
+          h(StockForm,{mode:'receive_product',data,balances,post,busy})),
+        photoPreview,searchBox('Search products'),listed(page,['SKU','Name','Category','Available','Unit cost','Selling price','Photos'],row=>[
+          row.sku,row.name,display(row.category),available(row),fmt(row.cost_price),fmt(row.selling_price),photoCell(row,'product-images'),
+        ],true,active),
+        archived.length>0&&h('details',{className:'card'},h('summary',null,'Archived products'),
+          h(Grid,{columns:requestDelete?['SKU','Name','Stock on record','Actions']:['SKU','Name','Stock on record'],
+            rows:archived.map(row=>({id:row.id,cells:[row.sku,row.name,available(row),
+              ...(requestDelete?[h('button',{type:'button',className:'secondary',disabled:busy,onClick:()=>restoreProduct(row)},'Restore')]:[])]}))})));
+    }
     case 'production_batches': return h(React.Fragment,null,h(StockForm,{key:'stock:'+page,mode:'complete_production',data,balances,post,busy}),photoPreview,
       listed(page,['Date','Product','Quantity','Total cost','Cost per unit','Status','Finished product photos'],row=>{
         const used=data.material_usage.filter(item=>item.batch_id===row.id);
@@ -468,7 +494,8 @@ function StockForm({mode,data,balances,post,busy}){
   const [other,setOther]=useState('');
   const next=useRef(1);
   const production=mode==='complete_production', sale=mode==='fulfill_sale', receipt=mode==='receive_product';
-  const choices=production?data.material_lots:data.products;
+  const activeProducts=data.products.filter(row=>!row.archived_at);
+  const choices=production?data.material_lots:activeProducts;
   const outputUnit=data.products.find(row=>row.id===output)?.unit||'piece';
   const estimates=lines.reduce((sum,line)=>{
     const row=choices.find(x=>x.id===line.id);
@@ -491,7 +518,7 @@ function StockForm({mode,data,balances,post,busy}){
         const id=e.target.value;
         setOutput(id);setUnits('');setReceiptUnit(id?(data.products.find(row=>row.id===id)?.unit||'piece'):'');
       }},
-        h('option',{value:''},'Choose…'),...data.products.map(row=>h('option',{value:row.id,key:row.id},row.sku+' · '+row.name)))),
+        h('option',{value:''},'Choose…'),...activeProducts.map(row=>h('option',{value:row.id,key:row.id},row.sku+' · '+row.name)))),
       !sale&&h('label',null,production&&output?'Finished quantity ('+unitLabels[outputUnit].toLowerCase()+')':'Finished quantity',h('input',{type:'number',min:'0.000001',step:'any',required:true,value:units,onChange:e=>setUnits(e.target.value)})),
       receipt&&h('label',null,'Stock unit',h('select',{required:true,disabled:!output,value:receiptUnit,
         onChange:event=>setReceiptUnit(event.target.value)},
