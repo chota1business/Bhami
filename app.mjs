@@ -48,6 +48,8 @@ function Workspace({session}){
   const [busy,setBusy]=useState(false);
   const [notice,setNotice]=useState(null);
   const [photo,setPhoto]=useState(null);
+  const [search,setSearch]=useState('');
+  const [invoiceId,setInvoiceId]=useState(null);
   const [deletion,setDeletion]=useState(null);
   const [revision,setRevision]=useState(0);
   const [pendingStock,setPendingStock]=useState(null);
@@ -126,6 +128,10 @@ function Workspace({session}){
       setPendingStock(null);
     }
     checked(result);
+    if(payload.operation==='fulfill_sale'){
+      setPage('sales_orders');
+      setInvoiceId(request.requestId);
+    }
   },'Stock posted.',done);
 
   const upload=(bucket,column,id,file,done)=>run(async()=>{
@@ -166,12 +172,12 @@ function Workspace({session}){
       balances.set(item,(balances.get(item)||0)+Number(movement.quantity_delta));
     }
   }
-  const move=next=>{setRecord(null);setPhoto(null);setPage(next);setNotice(null);};
+  const move=next=>{setRecord(null);setPhoto(null);setSearch('');setInvoiceId(null);setPage(next);setNotice(null);};
   const requestDelete=(table,row)=>setDeletion({table,row,step:1});
   let content=null;
   if(memberships && !membership) content=h('div',{className:'card'},'Your account has no business membership. Ask the business owner to add you.');
   else if(membership && !canOperate) content=h('div',{className:'card'},'Your staff membership is active. This account has access to its membership and business details.');
-  else if(data?.tenant===tenant) content=viewPage({page,data,balances,save,post,busy,record,setRecord,upload,preview,photo,setPhoto,move,requestDelete:membership?.role==='owner'?requestDelete:null});
+  else if(data?.tenant===tenant) content=viewPage({page,data,balances,save,post,busy,record,setRecord,upload,preview,photo,setPhoto,move,search,setSearch,invoiceId,setInvoiceId,businessName:membership.businesses?.name,requestDelete:membership?.role==='owner'?requestDelete:null});
   else content=h('p',{role:'status'},'Loading business records…');
 
   return h('div',{className:'layout'},h('aside',null,
@@ -225,11 +231,11 @@ function DeleteDialog({deletion,setDeletion,remove}){
       }},step===1?'Continue':'Delete permanently')));
 }
 
-function viewPage({page,data,balances,save,post,busy,record,setRecord,upload,preview,photo,setPhoto,move,requestDelete}){
+function viewPage({page,data,balances,save,post,busy,record,setRecord,upload,preview,photo,setPhoto,move,search,setSearch,invoiceId,setInvoiceId,businessName,requestDelete}){
   const get=(table,id)=>data[table].find(row=>row.id===id);
   const ledgerBalance=row=>number(balances.get(row.id)||0);
-  const listed=(table,cols,render,edit=false)=>h('section',{className:'card'},h('h2',null,names[table]),
-    h(Grid,{columns:edit||requestDelete?[...cols,'Actions']:cols,rows:[...(data[table]||[])].sort((a,b)=>String(b.created_at||b.purchased_on||'').localeCompare(String(a.created_at||a.purchased_on||''))).map(row=>({
+  const listed=(table,cols,render,edit=false,rows=data[table]||[])=>h('section',{className:'card'},h('h2',null,names[table]),
+    h(Grid,{columns:edit||requestDelete?[...cols,'Actions']:cols,rows:[...rows].sort((a,b)=>String(b.created_at||b.purchased_on||'').localeCompare(String(a.created_at||a.purchased_on||''))).map(row=>({
       id:row.id,cells:[...render(row),...(edit||requestDelete?[h('div',{className:'inline'},
         edit&&h('button',{className:'secondary',disabled:busy,onClick:()=>setRecord(row)},'Edit'),
         requestDelete&&h('button',{className:'delete-action',disabled:busy,onClick:()=>{
@@ -246,6 +252,19 @@ function viewPage({page,data,balances,save,post,busy,record,setRecord,upload,pre
     h('img',{className:'photo',src:photo.url,alt:photo.name}));
   const photoCell=(row,bucket)=>h(RecordPhotos,{row,bucket,assets:data.media_assets,upload,preview,busy});
   const currency=(rows,col)=>fmt(rows.reduce((sum,row)=>sum+Number(row.quantity)*Number(row[col]),0));
+  const terms=search.trim().toLowerCase().split(/\s+/).filter(Boolean);
+  const matches=(...values)=>{
+    const haystack=values.filter(Boolean).map(display).join(' ').toLowerCase();
+    return terms.every(term=>haystack.includes(term));
+  };
+  const searchBox=labelText=>h('section',{className:'card'},h('label',null,labelText,
+    h('input',{type:'search',value:search,onChange:event=>setSearch(event.target.value)})));
+  if(page==='sales_orders'&&invoiceId){
+    const order=get('sales_orders',invoiceId);
+    const items=data.sales_items.filter(item=>item.order_id===invoiceId);
+    return h(SaleInvoice,{order,items,businessName,customer:get('customers',order?.customer_id),
+      products:data.products,close:()=>setInvoiceId(null)});
+  }
   const stocked=data.products.filter(row=>(balances.get(row.id)||0)>0).length;
   const sales=data.sales_orders.filter(row=>row.status==='fulfilled').length;
   if(page==='Overview') return h(React.Fragment,null,
@@ -259,15 +278,15 @@ function viewPage({page,data,balances,save,post,busy,record,setRecord,upload,pre
     case 'suppliers': return h(React.Fragment,null,editor,listed(page,['Name','Phone','Notes'],row=>[row.name,row.phone||'—',row.notes||'—'],true));
     case 'customers': return h(React.Fragment,null,editor,listed(page,['Name','Phone','Email'],row=>[row.name,row.phone||'—',row.email||'—'],true));
     case 'purchases': return h(React.Fragment,null,editor,listed(page,['Date','Supplier','Invoice','Shipping'],row=>[row.purchased_on,label(get('suppliers',row.supplier_id),'suppliers'),row.invoice_number||'—',fmt(row.shipping_cost)],true));
-    case 'material_lots': return h(React.Fragment,null,editor,photoPreview,
+    case 'material_lots': return h(React.Fragment,null,editor,photoPreview,searchBox('Search fabric & lace'),
       listed(page,['Lot','Material','Received','Available','Unit cost','Photos'],row=>[
         row.name,display(row.material_type),number(row.quantity_purchased)+' '+row.unit,ledgerBalance(row)+' '+row.unit,fmt(row.unit_cost),
         photoCell(row,row.material_type==='lace'?'lace-images':'fabric-images'),
-      ],true));
+      ],true,data.material_lots.filter(row=>matches(row.name,row.material_type,row.unit,get('purchases',row.purchase_id)?.invoice_number))));
     case 'products': return h(React.Fragment,null,editor,h(StockForm,{key:'stock:'+page,mode:'receive_product',data,balances,post,busy}),
-      photoPreview,listed(page,['SKU','Name','Category','Available','Unit cost','Selling price','Photos'],row=>[
+      photoPreview,searchBox('Search products'),listed(page,['SKU','Name','Category','Available','Unit cost','Selling price','Photos'],row=>[
         row.sku,row.name,display(row.category),ledgerBalance(row),fmt(row.cost_price),fmt(row.selling_price),photoCell(row,'product-images'),
-      ],true));
+      ],true,data.products.filter(row=>matches(row.name,row.sku,row.category,row.source,row.size))));
     case 'production_batches': return h(React.Fragment,null,h(StockForm,{key:'stock:'+page,mode:'complete_production',data,balances,post,busy}),photoPreview,
       listed(page,['Date','Product','Quantity','Total cost','Cost per unit','Status','Finished product photos'],row=>{
         const used=data.material_usage.filter(item=>item.batch_id===row.id);
@@ -276,10 +295,11 @@ function viewPage({page,data,balances,save,post,busy,record,setRecord,upload,pre
           get('products',row.product_id)?photoCell(get('products',row.product_id),'product-images'):'—'];
       }));
     case 'sales_orders': return h(React.Fragment,null,h(StockForm,{key:'stock:'+page,mode:'fulfill_sale',data,balances,post,busy}),
-      listed(page,['Date','Channel','Customer','Items','Total','Status'],row=>{
+      listed(page,['Date','Channel','Customer','Items','Total','Status','Invoice'],row=>{
         const items=data.sales_items.filter(item=>item.order_id===row.id);
         return [new Date(row.created_at).toLocaleDateString('en-IN'),display(row.channel),label(get('customers',row.customer_id),'customers'),
-          items.map(item=>number(item.quantity)+' × '+label(get('products',item.product_id),'products')).join(', '),currency(items,'unit_price'),display(row.status)];
+          items.map(item=>number(item.quantity)+' × '+label(get('products',item.product_id),'products')).join(', '),currency(items,'unit_price'),display(row.status),row.status==='fulfilled'&&items.length>0?
+            h('button',{type:'button',className:'secondary',disabled:busy,onClick:()=>setInvoiceId(row.id)},'View invoice'):'—'];
       }));
     case 'media_assets': return h(React.Fragment,null,h(FileForm,{data,upload,busy}),
       listed(page,['Category','Linked record','Added','File'],row=>{
@@ -289,6 +309,28 @@ function viewPage({page,data,balances,save,post,busy,record,setRecord,upload,pre
       }),photoPreview);
     default:return null;
   }
+}
+
+function SaleInvoice({order,items,businessName,customer,products,close}){
+  const total=items.reduce((sum,item)=>sum+Number(item.quantity)*Number(item.unit_price),0);
+  return h('section',{className:'card sale-invoice','aria-label':'Sales invoice'},
+    h('div',{className:'inline invoice-actions'},
+      h('button',{type:'button',className:'secondary',onClick:close},'Back to sales'),
+      h('button',{type:'button',disabled:!order||!items.length,onClick:()=>window.print()},'Print / Save PDF')),
+    h('h2',null,'Sales invoice'),
+    order&&items.length?h(React.Fragment,null,
+      h('p',null,h('strong',null,businessName||'Bhami')),
+      h('p',null,'Invoice ID ',order.id),
+      h('p',null,'Sold on ',new Date(order.created_at).toLocaleDateString('en-IN')),
+      h('p',null,'Customer ',customer?.name||'Walk-in customer'),
+      h('p',null,'Channel ',display(order.channel)),
+      h(Grid,{columns:['SKU','Product','Quantity','Unit price','Amount'],rows:items.map(item=>{
+        const product=products.find(row=>row.id===item.product_id);
+        return {id:item.id,cells:[product?.sku||'—',product?.name||'Product',number(item.quantity),
+          fmt(item.unit_price),fmt(Number(item.quantity)*Number(item.unit_price))]};
+      })}),
+      h('p',{className:'invoice-total'},h('strong',null,'Total ',fmt(total))))
+      :h('p',{role:'status'},'Loading saved sale…'));
 }
 
 function App(){
