@@ -30,6 +30,7 @@ const redirect = () => new URL('./',window.location.href).href;
 const checked = ({data,error}) => {if(error) throw error; return data;};
 const errText = error => error?.message || 'Something went wrong. Please try again.';
 const display = value => String(value).replaceAll('_',' ');
+const unitLabels={metre:'Metres',piece:'Pieces',roll:'Rolls'};
 
 async function readAll(table, tenant) {
   const rows = [];
@@ -300,8 +301,8 @@ function viewPage({page,data,balances,save,post,busy,record,setRecord,upload,pre
       h('details',{className:'card'},h('summary',null,'Add stock to an existing product'),
         h(StockForm,{mode:'receive_product',data,balances,post,busy})),
       photoPreview,searchBox('Search products'),listed(page,['SKU','Name','Category','Available','Unit cost','Selling price','Photos'],row=>[
-        row.sku,row.name,display(row.category),ledgerBalance(row),fmt(row.cost_price),fmt(row.selling_price),photoCell(row,'product-images'),
-      ],true,data.products.filter(row=>matches(row.name,row.sku,row.category,row.source,row.size))));
+        row.sku,row.name,display(row.category),ledgerBalance(row)+' '+unitLabels[row.unit||'piece'].toLowerCase(),fmt(row.cost_price),fmt(row.selling_price),photoCell(row,'product-images'),
+      ],true,data.products.filter(row=>matches(row.name,row.sku,row.category,row.source,row.size,unitLabels[row.unit||'piece']))));
     case 'production_batches': return h(React.Fragment,null,h(StockForm,{key:'stock:'+page,mode:'complete_production',data,balances,post,busy}),photoPreview,
       listed(page,['Date','Product','Quantity','Total cost','Cost per unit','Status','Finished product photos'],row=>{
         const used=data.material_usage.filter(item=>item.batch_id===row.id);
@@ -333,7 +334,7 @@ function SaleInvoice({order,items,businessName,customer,products,close}){
   const soldOn=order?new Date(order.created_at).toLocaleDateString('en-IN'):'';
   const rows=items.map(item=>{
     const product=products.find(row=>row.id===item.product_id);
-    return {id:item.id,cells:[product?.sku||'—',product?.name||'Product',number(item.quantity),
+    return {id:item.id,cells:[product?.sku||'—',product?.name||'Product',number(item.quantity)+' '+unitLabels[product?.unit||'piece'].toLowerCase(),
       fmt(item.unit_price),fmt(Number(item.quantity)*Number(item.unit_price))]};
   });
   const whatsappText=order&&rows.length?[
@@ -414,9 +415,9 @@ function App(){
 
 
 function Field({spec, data={}, record={}, disabled=false, onChange}){
-  const [key,title,type='text',required=true] = spec;
-  const startingValue = record[key] ?? '';
-  const selection = Array.isArray(type) ? type.map(value=>[value,display(value)])
+  const [key,title,type='text',required=true,defaultValue=''] = spec;
+  const startingValue = record[key] ?? defaultValue;
+  const selection = Array.isArray(type) ? type.map(value=>[value,key==='unit'?unitLabels[value]||display(value):display(value)])
     : Array.isArray(data[type]) ? data[type].map(row=>[row.id,label(row,type)]) : null;
   const control = selection ? h('select',{name:key,required,defaultValue:startingValue,disabled,onChange},
     h('option',{value:''}, required ? 'Choose…' : 'None'),...selection.map(([value,text])=>h('option',{key:value,value},text)))
@@ -440,7 +441,7 @@ function Editor({table,data,save,record,close,busy}){
   const [category,setCategory]=useState(record?.category||'');
   const specs=fields[table].filter(([key])=>
     (key!=='quantity_purchased'||!record)&&(key!=='size'||category==='dress'));
-  if(table==='products'&&!record)specs.push(['opening_quantity','Opening quantity','amount',false]);
+  if(table==='products'&&!record)specs.push(['opening_quantity','Opening quantity','amount',false],['unit','Stock unit',['piece','metre'],true,'piece']);
   return h('section',{className:table==='products'?'card product-editor':'card'},h('h2',null,(record?'Edit ':'Add ')+entry),
     h('form',{key:record?.id||'new',onSubmit:event=>{
       event.preventDefault();
@@ -461,12 +462,14 @@ function Editor({table,data,save,record,close,busy}){
 function StockForm({mode,data,balances,post,busy}){
   const [lines,setLines]=useState([{key:0,id:'',quantity:''}]);
   const [output,setOutput]=useState('');
+  const [receiptUnit,setReceiptUnit]=useState('');
   const [units,setUnits]=useState('');
   const [tailoring,setTailoring]=useState('');
   const [other,setOther]=useState('');
   const next=useRef(1);
   const production=mode==='complete_production', sale=mode==='fulfill_sale', receipt=mode==='receive_product';
   const choices=production?data.material_lots:data.products;
+  const outputUnit=data.products.find(row=>row.id===output)?.unit||'piece';
   const estimates=lines.reduce((sum,line)=>{
     const row=choices.find(x=>x.id===line.id);
     return sum+Number(line.quantity||0)*Number(row?.[production?'unit_cost':'selling_price']||0);
@@ -478,25 +481,34 @@ function StockForm({mode,data,balances,post,busy}){
       event.preventDefault();
       const form=event.currentTarget, values=new FormData(form);
       const items=lines.map(({id,quantity})=>({id,quantity:Number(quantity)}));
-      const details=production?{materials:items,tailoring_cost:Number(tailoring||0),other_cost:Number(other||0)}:sale?{items,channel:values.get('channel'),customer_id:values.get('customer_id')||null}:{};
+      const details=production?{materials:items,tailoring_cost:Number(tailoring||0),other_cost:Number(other||0)}:sale?{items,channel:values.get('channel'),customer_id:values.get('customer_id')||null}:{unit:receiptUnit};
       post({operation:mode,item_id:sale?null:output,units:sale?null:Number(units),details},()=>{
-        form.reset(); setOutput('');setUnits('');setTailoring('');setOther('');setLines([{key:0,id:'',quantity:''}]);
+        form.reset(); setOutput('');setReceiptUnit('');setUnits('');setTailoring('');setOther('');setLines([{key:0,id:'',quantity:''}]);
       });
     }},
     h('div',{className:'form-grid'},
-      !sale&&h('label',null,'Product',h('select',{required:true,value:output,onChange:e=>setOutput(e.target.value)},
+      !sale&&h('label',null,'Product',h('select',{required:true,value:output,onChange:e=>{
+        const id=e.target.value;
+        setOutput(id);setUnits('');setReceiptUnit(id?(data.products.find(row=>row.id===id)?.unit||'piece'):'');
+      }},
         h('option',{value:''},'Choose…'),...data.products.map(row=>h('option',{value:row.id,key:row.id},row.sku+' · '+row.name)))),
-      !sale&&h('label',null,'Finished quantity',h('input',{type:'number',min:'0.000001',step:'any',required:true,value:units,onChange:e=>setUnits(e.target.value)})),
+      !sale&&h('label',null,production&&output?'Finished quantity ('+unitLabels[outputUnit].toLowerCase()+')':'Finished quantity',h('input',{type:'number',min:'0.000001',step:'any',required:true,value:units,onChange:e=>setUnits(e.target.value)})),
+      receipt&&h('label',null,'Stock unit',h('select',{required:true,disabled:!output,value:receiptUnit,
+        onChange:event=>setReceiptUnit(event.target.value)},
+        h('option',{value:''},'Choose product first'),...['piece','metre'].map(unit=>
+          h('option',{key:unit,value:unit,disabled:unit!==outputUnit},unitLabels[unit]))),
+        h('small',{className:'muted'},'Stock additions use the unit set when the product was created.')),
       production&&h('label',null,'Tailoring cost',h('input',{type:'number',min:0,step:'any',value:tailoring,onChange:e=>setTailoring(e.target.value)})),
       production&&h('label',null,'Other batch costs',h('input',{type:'number',min:0,step:'any',value:other,onChange:e=>setOther(e.target.value)})),
       sale&&h(Field,{spec:['channel','Sales channel',['direct','whatsapp','exhibition','online']]}),
       sale&&h(Field,{spec:['customer_id','Customer','customers',false],data})),
     !receipt&&h('fieldset',null,h('legend',null,production?'Materials used':'Products sold'),
       ...lines.map(line=>{
-        const unit=production?choices.find(row=>row.id===line.id)?.unit:null;
+        const chosen=choices.find(row=>row.id===line.id);
+        const unit=chosen&&(production?chosen.unit:chosen.unit||'piece');
         return h('div',{className:'line',key:line.key},
         h('label',null,production?'Material lot':'Product',h('select',{required:true,value:line.id,onChange:e=>change(line.key,{id:e.target.value,...(production?{quantity:''}:{})})},
-          h('option',{value:''},'Choose…'),...choices.map(row=>h('option',{value:row.id,key:row.id},row.name+' · '+number(balances.get(row.id)||0)+(production?' '+row.unit:'')+' available')))),
+          h('option',{value:''},'Choose…'),...choices.map(row=>h('option',{value:row.id,key:row.id},row.name+' · '+number(balances.get(row.id)||0)+' '+(production?row.unit:unitLabels[row.unit||'piece'].toLowerCase())+' available')))),
         h('label',null,unit?'Quantity ('+unit+')':'Quantity',h('input',{type:'number',min:'0.000001',step:'any',required:true,value:line.quantity,onChange:e=>change(line.key,{quantity:e.target.value})})),
         h('button',{type:'button',className:'secondary',disabled:lines.length===1,onClick:()=>setLines(old=>old.filter(x=>x.key!==line.key))},'Remove'));
       }),
