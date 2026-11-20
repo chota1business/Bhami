@@ -96,6 +96,19 @@ function Workspace({session}){
   };
 
   const save=(table,payload,id,done)=>run(async()=>{
+    if(table==='products'&&!id){
+      const {opening_quantity=0,...product}=payload;
+      const storageKey='opening-stock:'+session.user.id+':'+tenant;
+      const signature=JSON.stringify([product,opening_quantity]);
+      const saved=JSON.parse(sessionStorage.getItem(storageKey)||'null');
+      if(saved&&saved.signature!==signature)throw new Error('The previous product save has an unknown result. Retry it with the original values first.');
+      const requestId=saved?.requestId||crypto.randomUUID();
+      sessionStorage.setItem(storageKey,JSON.stringify({signature,requestId}));
+      const result=await db.rpc('create_product_with_opening_stock',{tenant,request_id:requestId,product,opening_quantity});
+      if(!result.error||/^[0-9A-Z]{5}$/.test(result.error.code||''))sessionStorage.removeItem(storageKey);
+      checked(result);
+      return;
+    }
     const query=id?db.from(table).update(payload).eq('business_id',tenant).eq('id',id):db.from(table).insert({business_id:tenant,...payload});
     checked(await query.select('id').single());
   },'Record saved.',done);
@@ -283,7 +296,9 @@ function viewPage({page,data,balances,save,post,busy,record,setRecord,upload,pre
         row.name,display(row.material_type),number(row.quantity_purchased)+' '+row.unit,ledgerBalance(row)+' '+row.unit,fmt(row.unit_cost),
         photoCell(row,row.material_type==='lace'?'lace-images':'fabric-images'),
       ],true,data.material_lots.filter(row=>matches(row.name,row.material_type,row.unit,get('purchases',row.purchase_id)?.invoice_number))));
-    case 'products': return h(React.Fragment,null,editor,h(StockForm,{key:'stock:'+page,mode:'receive_product',data,balances,post,busy}),
+    case 'products': return h(React.Fragment,null,editor,
+      h('details',{className:'card'},h('summary',null,'Add stock to an existing product'),
+        h(StockForm,{mode:'receive_product',data,balances,post,busy})),
       photoPreview,searchBox('Search products'),listed(page,['SKU','Name','Category','Available','Unit cost','Selling price','Photos'],row=>[
         row.sku,row.name,display(row.category),ledgerBalance(row),fmt(row.cost_price),fmt(row.selling_price),photoCell(row,'product-images'),
       ],true,data.products.filter(row=>matches(row.name,row.sku,row.category,row.source,row.size))));
@@ -313,22 +328,33 @@ function viewPage({page,data,balances,save,post,busy,record,setRecord,upload,pre
 
 function SaleInvoice({order,items,businessName,customer,products,close}){
   const total=items.reduce((sum,item)=>sum+Number(item.quantity)*Number(item.unit_price),0);
+  const seller=businessName||'Bhami';
+  const buyer=customer?.name||'Walk-in customer';
+  const soldOn=order?new Date(order.created_at).toLocaleDateString('en-IN'):'';
+  const rows=items.map(item=>{
+    const product=products.find(row=>row.id===item.product_id);
+    return {id:item.id,cells:[product?.sku||'—',product?.name||'Product',number(item.quantity),
+      fmt(item.unit_price),fmt(Number(item.quantity)*Number(item.unit_price))]};
+  });
+  const whatsappText=order&&rows.length?[
+    seller+' · Sales invoice','Invoice ID: '+order.id,'Sold on: '+soldOn,'Customer: '+buyer,'',
+    ...rows.map(({cells:[sku,name,quantity,price,amount]})=>quantity+' × '+name+' ('+sku+') at '+price+' = '+amount),
+    '','Total: '+fmt(total),
+  ].join('\n'):null;
   return h('section',{className:'card sale-invoice','aria-label':'Sales invoice'},
     h('div',{className:'inline invoice-actions'},
       h('button',{type:'button',className:'secondary',onClick:close},'Back to sales'),
-      h('button',{type:'button',disabled:!order||!items.length,onClick:()=>window.print()},'Print / Save PDF')),
+      h('button',{type:'button',disabled:!order||!items.length,onClick:()=>window.print()},'Print / Save PDF'),
+      whatsappText&&h('a',{className:'invoice-share',href:'https://wa.me/?text='+encodeURIComponent(whatsappText),
+        target:'_blank',rel:'noopener noreferrer'},'Share via WhatsApp')),
     h('h2',null,'Sales invoice'),
     order&&items.length?h(React.Fragment,null,
-      h('p',null,h('strong',null,businessName||'Bhami')),
+      h('p',null,h('strong',null,seller)),
       h('p',null,'Invoice ID ',order.id),
-      h('p',null,'Sold on ',new Date(order.created_at).toLocaleDateString('en-IN')),
-      h('p',null,'Customer ',customer?.name||'Walk-in customer'),
+      h('p',null,'Sold on ',soldOn),
+      h('p',null,'Customer ',buyer),
       h('p',null,'Channel ',display(order.channel)),
-      h(Grid,{columns:['SKU','Product','Quantity','Unit price','Amount'],rows:items.map(item=>{
-        const product=products.find(row=>row.id===item.product_id);
-        return {id:item.id,cells:[product?.sku||'—',product?.name||'Product',number(item.quantity),
-          fmt(item.unit_price),fmt(Number(item.quantity)*Number(item.unit_price))]};
-      })}),
+      h(Grid,{columns:['SKU','Product','Quantity','Unit price','Amount'],rows}),
       h('p',{className:'invoice-total'},h('strong',null,'Total ',fmt(total))))
       :h('p',{role:'status'},'Loading saved sale…'));
 }
@@ -396,7 +422,7 @@ function Field({spec, data={}, record={}, disabled=false, onChange}){
     h('option',{value:''}, required ? 'Choose…' : 'None'),...selection.map(([value,text])=>h('option',{key:value,value},text)))
     : h('input',{name:key,required,defaultValue:startingValue,disabled,type:['money','amount'].includes(type)?'number':type,
       ...(['money','amount'].includes(type)?{min:0,step:'any'}:{})});
-  return h('label',null,title,control,key==='sku'&&h('small',{className:'muted'},record.id?'Keep the existing SKU or enter a custom one.':'Leave blank to assign the next SAR or DRS code when you save.'),key==='source'&&h('small',{className:'muted source-hint'},
+  return h('label',null,title,control,key==='opening_quantity'&&h('small',{className:'muted'},'Leave blank or enter zero if there is no stock yet.'),key==='sku'&&h('small',{className:'muted'},record.id?'Keep the existing SKU or enter a custom one.':'Leave blank to assign the next SAR or DRS code when you save.'),key==='source'&&h('small',{className:'muted source-hint'},
     h('span',null,'* Ready-made — bought as a finished item for resale.'),
     h('span',null,'* In-house — made by your own team.'),
     h('span',null,'* External — made to order by an outside tailor or production partner.')));
@@ -414,7 +440,8 @@ function Editor({table,data,save,record,close,busy}){
   const [category,setCategory]=useState(record?.category||'');
   const specs=fields[table].filter(([key])=>
     (key!=='quantity_purchased'||!record)&&(key!=='size'||category==='dress'));
-  return h('section',{className:'card'},h('h2',null,(record?'Edit ':'Add ')+entry),
+  if(table==='products'&&!record)specs.push(['opening_quantity','Opening quantity','amount',false]);
+  return h('section',{className:table==='products'?'card product-editor':'card'},h('h2',null,(record?'Edit ':'Add ')+entry),
     h('form',{key:record?.id||'new',onSubmit:event=>{
       event.preventDefault();
       const form=event.currentTarget, values=new FormData(form);
